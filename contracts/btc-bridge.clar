@@ -306,3 +306,91 @@
         (ok true)
     )
 )
+
+;; Confirms a deposit into the bridge. Validators must call this function.
+(define-public (confirm-deposit 
+    (tx-hash (buff 32))
+    (signature (buff 65))
+)
+    (let (
+        (deposit (unwrap! (map-get? deposits {tx-hash: tx-hash}) (err ERROR-INVALID-BRIDGE-STATUS)))
+        (is-validator (get-validator-status tx-sender))
+    )
+        (asserts! (not (var-get bridge-paused)) (err ERROR-BRIDGE-PAUSED))
+        (asserts! is-validator (err ERROR-NOT-AUTHORIZED))
+        (asserts! (is-valid-tx-hash tx-hash) (err ERROR-INVALID-TX-HASH))
+        (asserts! (is-valid-signature signature) (err ERROR-INVALID-SIGNATURE-FORMAT))
+        (asserts! (not (get processed deposit)) (err ERROR-ALREADY-PROCESSED))
+        (asserts! (>= (get confirmations deposit) REQUIRED-CONFIRMATIONS) (err ERROR-INVALID-BRIDGE-STATUS))
+        
+        (asserts! 
+            (is-none (map-get? validator-signatures {tx-hash: tx-hash, validator: tx-sender}))
+            (err ERROR-DUPLICATE-SIGNATURE)
+        )
+        
+        (let
+            ((validated-signature {
+                signature: signature,
+                timestamp: stacks-block-height
+            })
+             (updated-sig-count (+ (get validator-signatures deposit) u1)))
+            
+            ;; Add the validator signature record
+            (map-set validator-signatures
+                {tx-hash: tx-hash, validator: tx-sender}
+                validated-signature
+            )
+            
+            ;; Update the deposit record with increased signature count
+            (map-set deposits
+                {tx-hash: tx-hash}
+                (merge deposit {validator-signatures: updated-sig-count})
+            )
+            
+            ;; If we've reached the threshold, process the deposit
+            (if (>= updated-sig-count VALIDATOR-THRESHOLD)
+                (process-validated-deposit tx-hash)
+                (ok true)
+            )
+        )
+    )
+)
+
+;; Private function to process a fully validated deposit
+(define-private (process-validated-deposit (tx-hash (buff 32)))
+    (let (
+        (deposit (unwrap! (map-get? deposits {tx-hash: tx-hash}) (err ERROR-INVALID-TX-HASH)))
+    )
+        (asserts! (not (get processed deposit)) (err ERROR-ALREADY-PROCESSED))
+        (asserts! (>= (get validator-signatures deposit) VALIDATOR-THRESHOLD) 
+                 (err ERROR-VALIDATOR-THRESHOLD-NOT-MET))
+        
+        ;; Mark as processed
+        (map-set deposits
+            {tx-hash: tx-hash}
+            (merge deposit {processed: true})
+        )
+        
+        ;; Update the recipient's balance
+        (map-set bridge-balances
+            (get recipient deposit)
+            (+ (default-to u0 (map-get? bridge-balances (get recipient deposit))) 
+               (get amount deposit))
+        )
+        
+        ;; Update total bridged amount
+        (var-set total-bridged-amount 
+            (+ (var-get total-bridged-amount) (get amount deposit))
+        )
+        
+        (print {
+            type: "deposit-processed",
+            tx-hash: tx-hash,
+            amount: (get amount deposit),
+            recipient: (get recipient deposit),
+            signatures: (get validator-signatures deposit)
+        })
+        
+        (ok true)
+    )
+)
