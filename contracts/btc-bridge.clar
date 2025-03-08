@@ -72,3 +72,85 @@
 )
 
 (define-map bridge-balances principal uint)
+
+(define-map user-withdrawal-limits
+    { user: principal, window-start: uint }
+    { total-amount: uint, request-count: uint }
+)
+
+(define-map pending-admin-change
+    { proposed-by: principal }
+    { new-admin: principal, expiration-height: uint }
+)
+
+;; Authorization functions
+(define-private (is-admin)
+    (is-eq tx-sender (var-get admin))
+)
+
+(define-private (is-contract-owner)
+    (is-eq tx-sender CONTRACT-DEPLOYER)
+)
+
+;; Rate limiting functions
+(define-private (check-rate-limit (user principal) (amount uint))
+    (let
+        (
+            (current-block stacks-block-height)
+            (window-start (- current-block (mod current-block RATE-LIMIT-WINDOW)))
+            (user-limits (default-to
+                { total-amount: u0, request-count: u0 }
+                (map-get? user-withdrawal-limits { user: user, window-start: window-start })
+            ))
+            (updated-total (+ (get total-amount user-limits) amount))
+            (updated-count (+ (get request-count user-limits) u1))
+        )
+        
+        ;; Allow 5 withdrawals per window
+        (asserts! (<= updated-count u5) (err ERROR-RATE-LIMIT-EXCEEDED))
+        
+        ;; Update user limits
+        (map-set user-withdrawal-limits
+            { user: user, window-start: window-start }
+            { total-amount: updated-total, request-count: updated-count }
+        )
+        
+        (ok true)
+    )
+)
+
+(define-private (check-daily-withdrawal-limit (amount uint))
+    (let
+        (
+            (current-block stacks-block-height)
+            (reset-height (var-get daily-withdrawal-reset-height))
+            (current-total (var-get daily-withdrawal-total))
+        )
+        
+        ;; Check if we need to reset the daily counter
+        (if (> current-block (+ reset-height RATE-LIMIT-WINDOW))
+            (begin
+                (var-set daily-withdrawal-total amount)
+                (var-set daily-withdrawal-reset-height current-block)
+            )
+            (var-set daily-withdrawal-total (+ current-total amount))
+        )
+        
+        ;; Check if the limit would be exceeded
+        (asserts! (<= (var-get daily-withdrawal-total) MAX-DAILY-WITHDRAWAL-AMOUNT)
+            (err ERROR-MAX-DAILY-LIMIT-REACHED))
+        
+        (ok true)
+    )
+)
+
+;; Public functions
+;; Initializes the bridge by setting the paused state to false. Only the contract deployer can call this function.
+(define-public (initialize-bridge)
+    (begin
+        (asserts! (is-contract-owner) (err ERROR-NOT-AUTHORIZED))
+        (var-set bridge-paused false)
+        (var-set daily-withdrawal-reset-height stacks-block-height)
+        (ok true)
+    )
+)
