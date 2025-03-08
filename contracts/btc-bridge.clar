@@ -394,3 +394,76 @@
         (ok true)
     )
 )
+
+;; Withdraws an amount from the bridge to a Bitcoin recipient address.
+(define-public (withdraw 
+    (amount uint)
+    (btc-recipient (buff 33))
+)
+    (let (
+        (current-balance (get-bridge-balance tx-sender))
+    )
+        (asserts! (not (var-get bridge-paused)) (err ERROR-BRIDGE-PAUSED))
+        (asserts! (>= current-balance amount) (err ERROR-INSUFFICIENT-BALANCE))
+        (asserts! (validate-deposit-amount amount) (err ERROR-INVALID-AMOUNT))
+        (asserts! (is-valid-btc-address btc-recipient) (err ERROR-INVALID-BTC-ADDRESS))
+        
+        ;; Check rate limits
+        (try! (check-rate-limit tx-sender amount))
+        (try! (check-daily-withdrawal-limit amount))
+        
+        ;; Update user balance
+        (map-set bridge-balances
+            tx-sender
+            (- current-balance amount)
+        )
+        
+        (print {
+            type: "withdraw",
+            sender: tx-sender,
+            amount: amount,
+            btc-recipient: btc-recipient,
+            timestamp: stacks-block-height
+        })
+        
+        (var-set total-bridged-amount (- (var-get total-bridged-amount) amount))
+        (ok true)
+    )
+)
+
+;; Allows the admin to perform an emergency withdrawal.
+(define-public (emergency-withdraw (amount uint) (recipient principal))
+    (begin
+        (asserts! (is-admin) (err ERROR-NOT-AUTHORIZED))
+        (asserts! (>= (var-get total-bridged-amount) amount) (err ERROR-INSUFFICIENT-BALANCE))
+        (asserts! (is-valid-principal recipient) (err ERROR-INVALID-RECIPIENT-ADDRESS))
+        
+        (let (
+            (current-balance (default-to u0 (map-get? bridge-balances recipient)))
+            (new-balance (+ current-balance amount))
+        )
+            (asserts! (> new-balance current-balance) (err ERROR-INVALID-AMOUNT))
+            (map-set bridge-balances recipient new-balance)
+            
+            (print {
+                type: "emergency-withdraw",
+                amount: amount,
+                recipient: recipient,
+                authorized-by: tx-sender
+            })
+            
+            (ok true)
+        )
+    )
+)
+
+;; Read only functions
+;; Retrieves the details of a deposit using the transaction hash.
+(define-read-only (get-deposit (tx-hash (buff 32)))
+    (map-get? deposits {tx-hash: tx-hash})
+)
+
+;; Gets validator signature for a deposit
+(define-read-only (get-validator-signature (tx-hash (buff 32)) (validator principal))
+    (map-get? validator-signatures {tx-hash: tx-hash, validator: validator})
+)
