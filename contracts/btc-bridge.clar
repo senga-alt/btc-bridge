@@ -154,3 +154,73 @@
         (ok true)
     )
 )
+
+;; Pauses the bridge. Only the admin can call this function.
+(define-public (pause-bridge)
+    (begin
+        (asserts! (is-admin) (err ERROR-NOT-AUTHORIZED))
+        (var-set bridge-paused true)
+        (ok true)
+    )
+)
+
+;; Resumes the bridge if it is paused. Only the admin can call this function.
+(define-public (resume-bridge)
+    (begin
+        (asserts! (is-admin) (err ERROR-NOT-AUTHORIZED))
+        (asserts! (var-get bridge-paused) (err ERROR-INVALID-BRIDGE-STATUS))
+        (asserts! (>= (var-get validator-count) MIN-VALIDATORS) (err ERROR-INSUFFICIENT-VALIDATORS))
+        (var-set bridge-paused false)
+        (ok true)
+    )
+)
+
+;; Proposes a new admin for the contract
+(define-public (propose-admin-change (new-admin principal))
+    (begin
+        (asserts! (is-admin) (err ERROR-NOT-AUTHORIZED))
+        (asserts! (is-valid-principal new-admin) (err ERROR-INVALID-RECIPIENT-ADDRESS))
+        
+        (map-set pending-admin-change
+            { proposed-by: tx-sender }
+            { new-admin: new-admin, expiration-height: (+ stacks-block-height u144) }
+        )
+        
+        (ok true)
+    )
+)
+
+;; Accepts a pending admin change
+(define-public (accept-admin-role)
+    (let
+        (
+            (pending-change (unwrap! (map-get? pending-admin-change { proposed-by: (var-get admin) }) 
+                            (err ERROR-NOT-AUTHORIZED)))
+            (expiration (get expiration-height pending-change))
+        )
+        
+        (asserts! (is-eq tx-sender (get new-admin pending-change)) (err ERROR-NOT-AUTHORIZED))
+        (asserts! (<= stacks-block-height expiration) (err ERROR-INVALID-TIMESTAMP))
+        
+        (var-set admin tx-sender)
+        
+        ;; Clear the pending change
+        (map-delete pending-admin-change { proposed-by: (var-get admin) })
+        
+        (ok true)
+    )
+)
+
+;; Adds a validator to the bridge. Only the admin can call this function.
+(define-public (add-validator (validator principal))
+    (begin
+        (asserts! (is-admin) (err ERROR-NOT-AUTHORIZED))
+        (asserts! (is-valid-principal validator) (err ERROR-INVALID-VALIDATOR-ADDRESS))
+        (asserts! (not (default-to false (map-get? validators validator))) (err ERROR-ALREADY-PROCESSED))
+        
+        (map-set validators validator true)
+        (var-set validator-count (+ (var-get validator-count) u1))
+        
+        (ok true)
+    )
+)
