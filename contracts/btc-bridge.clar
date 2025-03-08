@@ -224,3 +224,85 @@
         (ok true)
     )
 )
+
+;; Removes a validator from the bridge. Only the admin can call this function.
+(define-public (remove-validator (validator principal))
+    (begin
+        (asserts! (is-admin) (err ERROR-NOT-AUTHORIZED))
+        (asserts! (is-valid-principal validator) (err ERROR-INVALID-VALIDATOR-ADDRESS))
+        (asserts! (default-to false (map-get? validators validator)) (err ERROR-INVALID-VALIDATOR-ADDRESS))
+        (asserts! (> (var-get validator-count) MIN-VALIDATORS) (err ERROR-INSUFFICIENT-VALIDATORS))
+        
+        (map-set validators validator false)
+        (var-set validator-count (- (var-get validator-count) u1))
+        
+        (ok true)
+    )
+)
+
+;; Initiates a deposit into the bridge. Validators must call this function.
+(define-public (initiate-deposit 
+    (tx-hash (buff 32)) 
+    (amount uint) 
+    (recipient principal)
+    (btc-sender (buff 33))
+)
+    (begin
+        (asserts! (not (var-get bridge-paused)) (err ERROR-BRIDGE-PAUSED))
+        (asserts! (validate-deposit-amount amount) (err ERROR-INVALID-AMOUNT))
+        (asserts! (get-validator-status tx-sender) (err ERROR-NOT-AUTHORIZED))
+        (asserts! (is-valid-tx-hash tx-hash) (err ERROR-INVALID-TX-HASH))
+        (asserts! (is-none (map-get? deposits {tx-hash: tx-hash})) (err ERROR-ALREADY-PROCESSED))
+        (asserts! (is-valid-principal recipient) (err ERROR-INVALID-RECIPIENT-ADDRESS))
+        (asserts! (is-valid-btc-address btc-sender) (err ERROR-INVALID-BTC-ADDRESS))
+        
+        (let
+            ((validated-deposit {
+                amount: amount,
+                recipient: recipient,
+                processed: false,
+                confirmations: u0,
+                timestamp: stacks-block-height,
+                btc-sender: btc-sender,
+                validator-signatures: u0
+            }))
+            
+            (map-set deposits
+                {tx-hash: tx-hash}
+                validated-deposit
+            )
+            
+            (print {
+                type: "deposit-initiated",
+                tx-hash: tx-hash, 
+                amount: amount,
+                recipient: recipient,
+                validator: tx-sender
+            })
+            
+            (ok true)
+        )
+    )
+)
+
+;; Updates the confirmation count for a deposit
+(define-public (update-confirmations
+    (tx-hash (buff 32))
+    (new-confirmations uint)
+)
+    (let (
+        (deposit (unwrap! (map-get? deposits {tx-hash: tx-hash}) (err ERROR-INVALID-TX-HASH)))
+        (is-validator (get-validator-status tx-sender))
+    )
+        (asserts! (not (var-get bridge-paused)) (err ERROR-BRIDGE-PAUSED))
+        (asserts! is-validator (err ERROR-NOT-AUTHORIZED))
+        (asserts! (> new-confirmations (get confirmations deposit)) (err ERROR-INVALID-BRIDGE-STATUS))
+        
+        (map-set deposits
+            {tx-hash: tx-hash}
+            (merge deposit {confirmations: new-confirmations})
+        )
+        
+        (ok true)
+    )
+)
